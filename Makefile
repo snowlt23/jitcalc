@@ -7,7 +7,7 @@ normal-test: calc
 	sh test.sh
 jit-test: jitcalc
 	sh test.sh
-test: normal-test jit-test ;
+test: normal-test clean jit-test ;
 
 clean:
-	rm jitcalc jitcalc.exe
+	-rm -f jitcalc jitcalc.exe

@@ -1,8 +1,7 @@
-echo "calc (normal)"
+echo "fib . 38 (normal)"
 make calc
 time ./jitcalc < fib.calc
-rm jitcalc jitcalc.exe
-
-echo "calc (jit)"
+make clean
+echo "fib . 38 (jit)"
 make jitcalc
 time ./jitcalc < fib.calc

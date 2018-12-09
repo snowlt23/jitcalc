@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdint.h>
+#include <inttypes.h>
 #include <stdlib.h>
 #include <string.h>
 #include <assert.h>
@@ -368,10 +369,9 @@ void jit_codegen(Expr* e) {
 				write_hex(0x41, 0x50); // push r8 # for register escape
 				jit_codegen(e->callarg);
 				write_hex(0x41, 0x58); // pop r8 # for dot(.) argument.
-				write_hex(0x48, 0xc7, 0xc0); // mov rax, $fnaddr
-				write_lendian((int)(jit_mem + f.jitidx));
+				write_hex(0xe8); // call $rel
+				write_lendian(f.jitidx - jit_pos - 4);
 				write_hex(
-					0xff, 0xd0, // call rax
 					0x41, 0x58, // pop r8 # for restore register.
 					0x50 // push rax
 				);
@@ -418,6 +418,6 @@ int main() {
 	for (;;) {
 		Expr* e = parse();
 		if (e->kind == EXPR_NOTHING) break;
-		printf("%d ", eval(e));
+		printf("%"PRId64" ", eval(e));
 	}
 }
