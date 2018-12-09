@@ -11,6 +11,7 @@
 typedef enum {
 	TOKEN_PLUS,
 	TOKEN_MINUS,
+	TOKEN_LESSER,
 	TOKEN_EQ,
 	TOKEN_DOT,
 	TOKEN_INTLIT,
@@ -29,10 +30,12 @@ typedef struct {
 typedef enum {
 	EXPR_ADD,
 	EXPR_SUB,
+	EXPR_LESSER,
 	EXPR_INT,
 	EXPR_ARG,
 	EXPR_FUNCDEF,
 	EXPR_FUNCCALL,
+	EXPR_IF,
 	EXPR_NOTHING
 } ExprKind;
 
@@ -44,6 +47,9 @@ typedef struct _Expr {
 	char* fnname;
 	struct _Expr* fnbody;
 	struct _Expr* callarg;
+	struct _Expr* cond;
+	struct _Expr* tbranch;
+	struct _Expr* fbranch;
 } Expr;
 
 typedef struct {
@@ -74,6 +80,8 @@ Token lex() {
 		return (Token){TOKEN_PLUS};
 	} else if (c == '-') {
 		return (Token){TOKEN_MINUS};
+	} else if (c == '<') {
+		return (Token){TOKEN_LESSER};
 	} else if (c == '=') {
 		return (Token){TOKEN_EQ};
 	} else if (c == '.') {
@@ -122,6 +130,15 @@ Expr* parse_intlit() {
 		e->kind = EXPR_ARG;
 		return e;
 	} else if (t.kind == TOKEN_IDENT) {
+		if (strcmp(t.ident, "if") == 0) { // if syntax
+			Expr* e = malloc(sizeof(Expr));
+			e->kind = EXPR_IF;
+			e->cond = parse();
+			e->tbranch = parse();
+			e->fbranch = parse();
+			return e;
+		}
+
 		Token eq = lex();
 		if (eq.kind == TOKEN_EQ) { // function-def syntax
 			Expr* e = malloc(sizeof(Expr));
@@ -148,6 +165,7 @@ Expr* parse_intlit() {
 Expr* parse() {
 	Expr* l = parse_intlit();
 	if (l->kind == EXPR_FUNCDEF) return l;
+	if (l->kind == EXPR_IF) return l;
 	for (;;) {
 		Token op = lex();
 		if (op.kind == TOKEN_NOTHING) break;
@@ -165,6 +183,13 @@ Expr* parse() {
 			e->l = l;
 			e->r = r;
 			l = e;
+		} else if (op.kind == TOKEN_LESSER) {
+			Expr* r = parse_intlit();
+			Expr* e = malloc(sizeof(Expr));
+			e->kind = EXPR_LESSER;
+			e->l = l;
+			e->r = r;
+			l = e;
 		} else {
 			assert(false);
 		}
@@ -177,6 +202,8 @@ int64_t eval(Expr* e) {
 		return eval(e->l) + eval(e->r);
 	} else if (e->kind == EXPR_SUB) {
 		return eval(e->l) - eval(e->r);
+	} else if (e->kind == EXPR_LESSER) {
+		return eval(e->l) < eval(e->r);
 	} else if (e->kind == EXPR_INT) {
 		return e->intval;
 	} else if (e->kind == EXPR_ARG) {
@@ -197,6 +224,13 @@ int64_t eval(Expr* e) {
 			}
 		}
 		error("undeclared %s function.", e->fnname);
+	} else if (e->kind == EXPR_IF) {
+		int64_t c = eval(e->cond);
+		if (c) {
+			return eval(e->tbranch);
+		} else {
+			return eval(e->fbranch);
+		}
 	} else {
 		assert(false);
 	}

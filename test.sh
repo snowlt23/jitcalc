@@ -12,7 +12,11 @@ runtest() {
 
 runtest "5" "5"
 runtest "4 + 5" "9"
+runtest "1 < 5" "1"
+runtest "2 < 1" "0"
 runtest "f = 555" "0"
 runtest "f = 555; 5" "0 5"
 runtest "f = 555; f . 0" "0 555"
 runtest "f = .; f . 45" "0 45"
+runtest "if 1; 4; 5;" "4"
+runtest "if 0; 4; 5;" "5"
