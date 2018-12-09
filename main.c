@@ -6,7 +6,31 @@
 #include <stdbool.h>
 #include <ctype.h>
 
+#ifdef JIT
+	#define eval jit_eval
+#else
+	#define eval normal_eval
+#endif
+
 #define error(...) {fprintf(stderr, __VA_ARGS__); exit(1);}
+
+#ifdef WIN32
+  #include <windows.h>
+  #define jit_memalloc(size) VirtualAlloc(0, size, MEM_COMMIT, PAGE_EXECUTE_READWRITE)
+  #define jit_memfree(p, size) VirtualFree(p, size, MEM_DECOMMIT)
+#else
+  #include <sys/mman.h>
+  #include <dlfcn.h>
+  #define jit_memalloc(size) mmap(NULL, size, PROT_EXEC|PROT_READ|PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, 0, 0)
+  #define jit_memfree(p, size) munmap(p, size)
+#endif
+
+#define CONCAT(a, b) a ## b
+#define write_hex2(id, ...) \
+  uint8_t id[] = {__VA_ARGS__}; \
+  jit_write(id, sizeof(id));
+#define write_hex1(ln, ...) write_hex2(CONCAT(_hex, ln), __VA_ARGS__)
+#define write_hex(...) write_hex1(__LINE__, __VA_ARGS__)
 
 typedef enum {
 	TOKEN_PLUS,
@@ -57,13 +81,18 @@ typedef struct _Expr {
 typedef struct {
 	char* name;
 	Expr* fnexpr;
+	size_t jitidx;
 } Function;
 
 Function funcs[1000];
 int funcnum = 0;
 int64_t funcarg = 0;
+uint8_t* jit_mem;
+size_t jit_pos = 0;
 
 Expr* parse();
+int64_t normal_eval(Expr* e);
+int64_t jit_eval(Expr* e);
 
 Token lex() {
 	char c = getc(stdin);
@@ -205,7 +234,7 @@ Expr* parse() {
 	return l;
 }
 
-int64_t eval(Expr* e) {
+int64_t normal_eval(Expr* e) {
 	if (e->kind == EXPR_ADD) {
 		return eval(e->l) + eval(e->r);
 	} else if (e->kind == EXPR_SUB) {
@@ -244,7 +273,146 @@ int64_t eval(Expr* e) {
 	}
 }
 
+void jit_write(uint8_t* bytes, size_t len) {
+	for (int i=0; i<len; i++) {
+		jit_mem[jit_pos] = bytes[i];
+		jit_pos++;
+	}
+}
+
+void write_lendian(int x) {
+  int b1 = x & 0xFF;
+  int b2 = (x >> 8) & 0xFF;
+  int b3 = (x >> 16) & 0xFF;
+  int b4 = (x >> 24) & 0xFF;
+  write_hex(b1, b2, b3, b4);
+}
+
+void fixup_lendian(size_t fixupidx, int x) {
+  int b1 = x & 0xFF;
+  int b2 = (x >> 8) & 0xFF;
+  int b3 = (x >> 16) & 0xFF;
+  int b4 = (x >> 24) & 0xFF;
+  uint8_t* fixupaddr = jit_mem + fixupidx;
+  fixupaddr[0] = b1;
+  fixupaddr[1] = b2;
+  fixupaddr[2] = b3;
+  fixupaddr[3] = b4;
+}
+
+int64_t jit_call(void* funcp, int64_t arg) {
+	int64_t result = -1;
+	__asm__ volatile(
+		".intel_syntax;"
+		"mov %%r8, %2;"
+		"call %1;"
+		"mov %0, %%rax;"
+		".att_syntax;"
+		: "=r"(result)
+		: "r"(funcp), "r"(arg)
+		: "rax", "r8"
+	);
+	return result;
+}
+
+//
+// stack machine jit codegen, r8 is special register for dot(.) argument.
+//
+void jit_codegen(Expr* e) {
+	if (e->kind == EXPR_ADD) {
+		jit_codegen(e->l);
+		jit_codegen(e->r);
+		write_hex(
+			0x59, // pop rcx
+			0x58, // pop rax
+			0x48, 0x01, 0xc8, // add rax, rcx
+			0x50 // push rax
+		);
+	} else if (e->kind == EXPR_SUB) {
+		jit_codegen(e->l);
+		jit_codegen(e->r);
+		write_hex(
+			0x59, // pop rcx
+			0x58, // pop rax
+			0x48, 0x29, 0xc8, // sub rax, rcx
+			0x50 // push rax
+		);
+	} else if (e->kind == EXPR_LESSER) {
+		jit_codegen(e->l);
+		jit_codegen(e->r);
+		write_hex(
+			0x59, // pop rcx
+			0x58, // pop rax
+			0x48, 0x39, 0xc8, // cmp rax, rcx
+			0x0f, 0x9c, 0xc0, // setl al
+			0x48, 0x0f, 0xb6, 0xc0, // movzx rax, al
+			0x50 // push rax
+		);
+	} else if (e->kind == EXPR_INT) {
+		write_hex(0x68); // push $intlit
+		write_lendian(e->intval);
+	} else if (e->kind == EXPR_ARG) {
+		write_hex(0x41, 0x50); // push r8
+	} else if (e->kind == EXPR_FUNCDEF) {
+		funcs[funcnum] = (Function){e->fnname, e->fnbody, jit_pos};
+		funcnum++;
+		jit_codegen(e->fnbody);
+		write_hex(0x58); // pop rax # for return value.
+		write_hex(0xc3); // ret
+	} else if (e->kind == EXPR_FUNCCALL) {
+		for (int i=0; i<funcnum; i++) {
+			Function f = funcs[i];
+			if (strcmp(f.name, e->fnname) == 0) {
+				write_hex(0x41, 0x50); // push r8 # for register escape
+				jit_codegen(e->callarg);
+				write_hex(0x41, 0x58); // pop r8 # for dot(.) argument.
+				write_hex(0x48, 0xc7, 0xc0); // mov rax, $fnaddr
+				write_lendian((int)(jit_mem + f.jitidx));
+				write_hex(
+					0xff, 0xd0, // call rax
+					0x41, 0x58, // pop r8 # for restore register.
+					0x50 // push rax
+				);
+				return;
+			}
+		}
+		error("undeclared %s function.", e->fnname);
+	} else if (e->kind == EXPR_IF) {
+		jit_codegen(e->cond);
+		write_hex(0x58); // pop rax
+		write_hex(0x48, 0x83, 0xf8, 0x00); // cmp rax, 0
+		write_hex(0x0f, 0x84); write_lendian(0); size_t fixupF = jit_pos; // je F (fixup)
+		jit_codegen(e->tbranch); // - true branch
+		write_hex(0xe9); write_lendian(0); size_t fixupE = jit_pos; // jmp E (fixup)
+		size_t faddr = jit_pos; // F:
+		jit_codegen(e->fbranch); // - false branch
+		size_t eaddr = jit_pos; // E:
+		fixup_lendian(fixupF-4, faddr - fixupF);
+		fixup_lendian(fixupE-4, eaddr - fixupE);
+	} else {
+		assert(false);
+	}
+}
+
+int64_t jit_eval(Expr* e) {
+	if (e->kind == EXPR_FUNCDEF) {
+		jit_codegen(e);
+		return 0;
+	} else if (e->kind == EXPR_FUNCCALL) {
+		for (int i=0; i<funcnum; i++) {
+			Function f = funcs[i];
+			if (strcmp(f.name, e->fnname) == 0) {
+				return jit_call(jit_mem + f.jitidx, jit_eval(e->callarg));
+			}
+		}
+		error("undeclared %s function.", e->fnname);
+	} else {
+		return normal_eval(e);
+	}
+}
+
 int main() {
+	jit_mem = jit_memalloc(1024*1024);
 	for (;;) {
 		Expr* e = parse();
 		if (e->kind == EXPR_NOTHING) break;
