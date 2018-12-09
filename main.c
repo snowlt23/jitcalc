@@ -15,6 +15,8 @@ typedef enum {
 	TOKEN_EQ,
 	TOKEN_DOT,
 	TOKEN_INTLIT,
+	TOKEN_LPAREN,
+	TOKEN_RPAREN,
 	TOKEN_IDENT,
 	TOKEN_NOTHING
 } TokenKind;
@@ -86,6 +88,10 @@ Token lex() {
 		return (Token){TOKEN_EQ};
 	} else if (c == '.') {
 		return (Token){TOKEN_DOT};
+	} else if (c == '(') {
+		return (Token){TOKEN_LPAREN};
+	} else if (c == ')') {
+		return (Token){TOKEN_NOTHING};
 	} else if (isdigit(c)) { // parse integer literal
 		char buf[256] = {};
 		buf[0] = c;
@@ -125,6 +131,8 @@ Expr* parse_intlit() {
 		e->kind = EXPR_INT;
 		e->intval = t.intval;
 		return e;
+	} else if (t.kind == TOKEN_LPAREN) {
+		return parse();
 	} else if (t.kind == TOKEN_DOT) {
 		Expr* e = malloc(sizeof(Expr));
 		e->kind = EXPR_ARG;
