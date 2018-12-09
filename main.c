@@ -6,10 +6,13 @@
 #include <stdbool.h>
 #include <ctype.h>
 
+#define error(...) {fprintf(stderr, __VA_ARGS__); exit(1);}
+
 typedef enum {
 	TOKEN_PLUS,
 	TOKEN_MINUS,
 	TOKEN_EQ,
+	TOKEN_DOT,
 	TOKEN_INTLIT,
 	TOKEN_IDENT,
 	TOKEN_NOTHING
@@ -27,7 +30,9 @@ typedef enum {
 	EXPR_ADD,
 	EXPR_SUB,
 	EXPR_INT,
+	EXPR_ARG,
 	EXPR_FUNCDEF,
+	EXPR_FUNCCALL,
 	EXPR_NOTHING
 } ExprKind;
 
@@ -38,6 +43,7 @@ typedef struct _Expr {
 	int64_t intval;
 	char* fnname;
 	struct _Expr* fnbody;
+	struct _Expr* callarg;
 } Expr;
 
 typedef struct {
@@ -47,6 +53,7 @@ typedef struct {
 
 Function funcs[1000];
 int funcnum = 0;
+int64_t funcarg = 0;
 
 Expr* parse();
 
@@ -69,6 +76,8 @@ Token lex() {
 		return (Token){TOKEN_MINUS};
 	} else if (c == '=') {
 		return (Token){TOKEN_EQ};
+	} else if (c == '.') {
+		return (Token){TOKEN_DOT};
 	} else if (isdigit(c)) { // parse integer literal
 		char buf[256] = {};
 		buf[0] = c;
@@ -81,7 +90,7 @@ Token lex() {
 			buf[i] = nc;
 		}
 		return (Token){TOKEN_INTLIT, strtoll(buf, NULL, 0)};
-	} else if (isalpha(c)) {
+	} else if (isalpha(c)) { // parse identifier
 		char buf[256] = {};
 		buf[0] = c;
 		for (int i=1; ; i++) {
@@ -108,14 +117,27 @@ Expr* parse_intlit() {
 		e->kind = EXPR_INT;
 		e->intval = t.intval;
 		return e;
+	} else if (t.kind == TOKEN_DOT) {
+		Expr* e = malloc(sizeof(Expr));
+		e->kind = EXPR_ARG;
+		return e;
 	} else if (t.kind == TOKEN_IDENT) {
 		Token eq = lex();
-		if (eq.kind != TOKEN_EQ) assert(false);
-		Expr* e = malloc(sizeof(Expr));
-		e->kind = EXPR_FUNCDEF;
-		e->fnname = t.ident;
-		e->fnbody = parse();
-		return e;
+		if (eq.kind == TOKEN_EQ) { // function-def syntax
+			Expr* e = malloc(sizeof(Expr));
+			e->kind = EXPR_FUNCDEF;
+			e->fnname = t.ident;
+			e->fnbody = parse();
+			return e;
+		} else if (eq.kind == TOKEN_DOT) { // function-call syntax
+			Expr* e = malloc(sizeof(Expr));
+			e->kind = EXPR_FUNCCALL;
+			e->fnname = t.ident;
+			e->callarg = parse();
+			return e;
+		} else {
+			assert(false);
+		}
 	} else {
 		Expr* e = malloc(sizeof(Expr));
 		e->kind = EXPR_NOTHING;
@@ -150,17 +172,31 @@ Expr* parse() {
 	return l;
 }
 
-int eval(Expr* e) {
+int64_t eval(Expr* e) {
 	if (e->kind == EXPR_ADD) {
 		return eval(e->l) + eval(e->r);
 	} else if (e->kind == EXPR_SUB) {
 		return eval(e->l) - eval(e->r);
 	} else if (e->kind == EXPR_INT) {
 		return e->intval;
+	} else if (e->kind == EXPR_ARG) {
+		return funcarg;
 	} else if (e->kind == EXPR_FUNCDEF) {
 		funcs[funcnum] = (Function){e->fnname, e->fnbody};
 		funcnum++;
 		return 0;
+	} else if (e->kind == EXPR_FUNCCALL) {
+		for (int i=0; i<funcnum; i++) {
+			Function f = funcs[i];
+			if (strcmp(f.name, e->fnname) == 0) {
+				int64_t tmparg = funcarg;
+				funcarg = eval(e->callarg);
+				int64_t result = eval(f.fnexpr);
+				funcarg = tmparg;
+				return result;
+			}
+		}
+		error("undeclared %s function.", e->fnname);
 	} else {
 		assert(false);
 	}
