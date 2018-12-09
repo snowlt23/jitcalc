@@ -107,6 +107,8 @@ Token lex() {
 
 	if (c == ';') {
 		return (Token){TOKEN_NOTHING};
+	} else if (c == '\n') {
+		return (Token){TOKEN_NOTHING};
 	} else if (c == '+') {
 		return (Token){TOKEN_PLUS};
 	} else if (c == '-') {
